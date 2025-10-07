@@ -13,18 +13,33 @@ const submissionRoutes = require('./routes/submissions');
 
 const app = express();
 
-// Middleware
-app.use(helmet());
+// FIX CORS - Thêm config chi tiết
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true
+  origin: [
+    'http://localhost:3000', 
+    'http://localhost:3001',
+    'http://localhost:3002', 
+    'http://localhost:8080',
+    'http://localhost:8000',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:3001'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With']
 }));
+
+// Handle preflight requests
+app.options('*', cors());
+
+// Middleware khác
+app.use(helmet());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 100
 });
 app.use(limiter);
@@ -55,64 +70,22 @@ app.use('*', (req, res) => {
   res.status(404).json({ message: 'Route not found' });
 });
 
-// Improved MongoDB connection with better error handling
-const connectDB = async () => {
-  try {
-    const conn = await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/programming_exam', {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-      serverSelectionTimeoutMS: 5000, // Timeout after 5 seconds
-      socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
-    });
-
-    console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
-    console.log(`📊 Database: ${conn.connection.name}`);
-  } catch (error) {
-    console.error('❌ MongoDB connection error:', error.message);
-    console.log('💡 Please make sure:');
-    console.log('   1. MongoDB is installed');
-    console.log('   2. MongoDB service is running');
-    console.log('   3. The connection string is correct');
-    process.exit(1);
-  }
-};
-
-// Handle MongoDB connection events
-mongoose.connection.on('connected', () => {
-  console.log('✅ Mongoose connected to MongoDB');
+// Connect to MongoDB
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/programming_exam', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
+.then(() => {
+  console.log('📊 Database: app_it');
+})
+.catch((error) => {
+  console.error('MongoDB connection error:', error);
 });
 
-mongoose.connection.on('error', (err) => {
-  console.error('❌ Mongoose connection error:', err);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Server is running on port ${PORT}`);
+  console.log(`🌐 Health check: http://localhost:${PORT}/api/health`);
 });
-
-mongoose.connection.on('disconnected', () => {
-  console.log('⚠️ Mongoose disconnected from MongoDB');
-});
-
-// Graceful shutdown
-process.on('SIGINT', async () => {
-  await mongoose.connection.close();
-  console.log('MongoDB connection closed through app termination');
-  process.exit(0);
-});
-
-// Connect to database and start server
-const startServer = async () => {
-  try {
-    await connectDB();
-    
-    const PORT = process.env.PORT || 3001;
-    app.listen(PORT, () => {
-      console.log(`🚀 Server is running on port ${PORT}`);
-      console.log(`🌐 Health check: http://localhost:${PORT}/api/health`);
-    });
-  } catch (error) {
-    console.error('Failed to start server:', error);
-    process.exit(1);
-  }
-};
-
-startServer();
 
 module.exports = app;

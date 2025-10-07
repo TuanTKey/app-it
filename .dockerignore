@@ -1,0 +1,36 @@
+# Flutter
+.dart_tool
+.idea
+.packages
+.pub-cache
+.pub
+build/
+android/
+ios/
+linux/
+macos/
+windows/
+test/
+
+# Backend
+backend/node_modules
+backend/npm-debug.log
+backend/.env
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Docker
+docker-compose.override.yml
