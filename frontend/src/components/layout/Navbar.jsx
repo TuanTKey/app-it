@@ -1,6 +1,6 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import { Code2, Trophy, BarChart3, LogOut, User } from 'lucide-react';
+import { Code2, Trophy, BarChart3, LogOut, Shield } from 'lucide-react';
 
 const Navbar = () => {
   const { user, logout } = useAuth();
@@ -36,6 +36,14 @@ const Navbar = () => {
                 <BarChart3 size={18} />
                 <span>Leaderboard</span>
               </Link>
+              
+              {/* Admin Link */}
+              {user.role === 'admin' && (
+                <Link to="/admin" className="flex items-center space-x-1 text-orange-600 hover:text-orange-700 transition font-semibold">
+                  <Shield size={18} />
+                  <span>Admin</span>
+                </Link>
+              )}
             </div>
           )}
 
@@ -47,7 +55,12 @@ const Navbar = () => {
                     {user.username[0].toUpperCase()}
                   </div>
                   <div className="hidden md:block">
-                    <div className="text-sm font-semibold">{user.username}</div>
+                    <div className="text-sm font-semibold">
+                      {user.username}
+                      {user.role === 'admin' && (
+                        <span className="ml-2 text-xs bg-orange-100 text-orange-600 px-2 py-0.5 rounded">Admin</span>
+                      )}
+                    </div>
                     <div className="text-xs text-gray-500">Rating: {user.rating}</div>
                   </div>
                 </Link>
@@ -64,7 +77,7 @@ const Navbar = () => {
                 <Link to="/login" className="text-gray-700 hover:text-purple-600 font-semibold transition">
                   Login
                 </Link>
-                <Link to="/register" className="btn-primary">
+                <Link to="/register" className="bg-gradient-to-r from-indigo-600 to-purple-600 text-white px-6 py-2 rounded-lg font-semibold hover:from-indigo-700 hover:to-purple-700 transition">
                   Sign Up
                 </Link>
               </>
