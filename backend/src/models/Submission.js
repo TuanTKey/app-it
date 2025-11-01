@@ -52,6 +52,19 @@ const submissionSchema = new mongoose.Schema({
   },
   errorMessage: {
     type: String
+  },
+  // ⭐ THÊM CÁC FIELD MỚI CHO AI JUDGE
+  aiAnalysis: {
+    type: String,
+    default: null
+  },
+  suggestions: [{
+    type: String
+  }],
+  judgeMethod: {
+    type: String,
+    enum: ['traditional', 'ai', 'hybrid'],
+    default: 'traditional'
   }
 }, {
   timestamps: true

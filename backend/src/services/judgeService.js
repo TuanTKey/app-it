@@ -4,13 +4,19 @@ const path = require('path');
 const Submission = require('../models/Submission');
 const Problem = require('../models/Problem');
 const User = require('../models/User');
+const aiJudgeService = require('./aiJudgeService');
 
 // Language configurations
 const LANGUAGE_CONFIG = {
   python: {
     extension: 'py',
     compileCmd: null,
-    runCmd: (filename) => `python ${filename}`
+    runCmd: (filename) => {
+      if (process.platform === 'win32') {
+        return `py ${filename}`;
+      }
+      return `python3 ${filename}`;
+    }
   },
   javascript: {
     extension: 'js',
@@ -20,7 +26,12 @@ const LANGUAGE_CONFIG = {
   cpp: {
     extension: 'cpp',
     compileCmd: (filename) => `g++ ${filename} -o ${filename}.out`,
-    runCmd: (filename) => `./${filename}.out`
+    runCmd: (filename) => {
+      if (process.platform === 'win32') {
+        return `${filename}.exe`;
+      }
+      return `./${filename}.out`;
+    }
   },
   java: {
     extension: 'java',
@@ -32,123 +43,156 @@ const LANGUAGE_CONFIG = {
 class JudgeService {
   async judgeSubmission(submissionId, problem, testCases, code, language) {
     try {
-      // Update status to judging
+      console.log(`🔍 Judging submission ${submissionId}...`);
+      
       await Submission.findByIdAndUpdate(submissionId, { 
         status: 'judging' 
       });
 
-      const langConfig = LANGUAGE_CONFIG[language];
-      if (!langConfig) {
-        await this.updateSubmissionError(submissionId, 'Unsupported language');
-        return;
-      }
+      // Check if AI Judge is enabled
+      const useAI = process.env.USE_AI_JUDGE === 'true';
+      const aiInitialized = await aiJudgeService.isInitialized();
 
-      // Create temp directory for this submission
-      const tempDir = path.join(__dirname, '../../temp', submissionId.toString());
-      await fs.mkdir(tempDir, { recursive: true });
-
-      const filename = path.join(tempDir, `solution.${langConfig.extension}`);
-      await fs.writeFile(filename, code);
-
-      // Compile if needed
-      if (langConfig.compileCmd) {
-        const compileResult = await this.executeCommand(
-          langConfig.compileCmd(filename),
-          tempDir,
-          5000
-        );
-
-        if (compileResult.error) {
-          await this.updateSubmissionError(
-            submissionId, 
-            compileResult.stderr || 'Compilation error',
-            'compile_error'
-          );
-          await this.cleanup(tempDir);
-          return;
+      if (useAI && aiInitialized) {
+        console.log('🤖 Using Gemini AI Judge...');
+        try {
+          return await this.judgeWithAI(submissionId, problem, testCases, code, language);
+        } catch (aiError) {
+          console.error('❌ AI Judge failed, falling back to traditional:', aiError);
+          return await this.judgeTraditional(submissionId, problem, testCases, code, language);
         }
+      } else {
+        console.log('🔧 Using Traditional Judge...');
+        return await this.judgeTraditional(submissionId, problem, testCases, code, language);
       }
-
-      // Run test cases
-      let passedTests = 0;
-      let totalTime = 0;
-      let maxMemory = 0;
-
-      for (const testCase of testCases) {
-        const result = await this.runTestCase(
-          langConfig.runCmd(filename),
-          tempDir,
-          testCase.input,
-          testCase.expectedOutput,
-          problem.timeLimit,
-          problem.memoryLimit
-        );
-
-        if (result.status === 'passed') {
-          passedTests++;
-        } else if (result.status === 'time_limit') {
-          await this.updateSubmissionError(
-            submissionId,
-            'Time Limit Exceeded',
-            'time_limit',
-            passedTests,
-            testCases.length
-          );
-          await this.cleanup(tempDir);
-          return;
-        } else if (result.status === 'runtime_error') {
-          await this.updateSubmissionError(
-            submissionId,
-            result.error,
-            'runtime_error',
-            passedTests,
-            testCases.length
-          );
-          await this.cleanup(tempDir);
-          return;
-        } else if (result.status === 'wrong_answer') {
-          await this.updateSubmissionError(
-            submissionId,
-            'Wrong Answer',
-            'wrong_answer',
-            passedTests,
-            testCases.length
-          );
-          await this.cleanup(tempDir);
-          return;
-        }
-
-        totalTime += result.time;
-        maxMemory = Math.max(maxMemory, result.memory || 0);
-      }
-
-      // All tests passed
-      await Submission.findByIdAndUpdate(submissionId, {
-        status: 'accepted',
-        testCasesPassed: passedTests,
-        totalTestCases: testCases.length,
-        executionTime: totalTime,
-        memory: maxMemory
-      });
-
-      // Update problem stats
-      await Problem.findByIdAndUpdate(problem._id, {
-        $inc: { acceptedCount: 1, submissionCount: 1 }
-      });
-
-      // Update user stats
-      await User.findByIdAndUpdate(
-        (await Submission.findById(submissionId)).userId,
-        { $inc: { solvedProblems: 1 } }
-      );
-
-      // Cleanup
-      await this.cleanup(tempDir);
 
     } catch (error) {
-      console.error('Judge error:', error);
+      console.error('❌ Judge error:', error);
       await this.updateSubmissionError(submissionId, 'Internal judge error');
     }
+  }
+
+  async judgeWithAI(submissionId, problem, testCases, code, language) {
+    try {
+      const result = await aiJudgeService.judgeCode(problem, code, language, testCases);
+
+      console.log('🤖 AI Verdict:', result.status);
+      console.log('📊 Test Cases Passed:', `${result.testCasesPassed}/${result.totalTestCases}`);
+
+      await Submission.findByIdAndUpdate(submissionId, {
+        status: result.status,
+        testCasesPassed: result.testCasesPassed,
+        totalTestCases: result.totalTestCases,
+        executionTime: result.executionTime,
+        errorMessage: result.status !== 'accepted' ? result.feedback : null,
+        aiAnalysis: result.aiAnalysis,
+        memory: 0
+      });
+
+      if (result.status === 'accepted') {
+        await Problem.findByIdAndUpdate(problem._id, {
+          $inc: { acceptedCount: 1, submissionCount: 1 }
+        });
+
+        const submission = await Submission.findById(submissionId);
+        await User.findByIdAndUpdate(submission.userId, {
+          $inc: { solvedProblems: 1 }
+        });
+      } else {
+        await Problem.findByIdAndUpdate(problem._id, {
+          $inc: { submissionCount: 1 }
+        });
+      }
+
+      return result;
+
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async judgeTraditional(submissionId, problem, testCases, code, language) {
+    const langConfig = LANGUAGE_CONFIG[language];
+    if (!langConfig) {
+      await this.updateSubmissionError(submissionId, 'Unsupported language');
+      return;
+    }
+
+    const tempDir = path.join(__dirname, '../../temp', submissionId.toString());
+    await fs.mkdir(tempDir, { recursive: true });
+
+    const filename = path.join(tempDir, `solution.${langConfig.extension}`);
+    await fs.writeFile(filename, code);
+
+    if (langConfig.compileCmd) {
+      const compileResult = await this.executeCommand(
+        langConfig.compileCmd(filename),
+        tempDir,
+        5000
+      );
+
+      if (compileResult.error) {
+        await this.updateSubmissionError(
+          submissionId, 
+          compileResult.stderr || 'Compilation error',
+          'compile_error'
+        );
+        await this.cleanup(tempDir);
+        return;
+      }
+    }
+
+    let passedTests = 0;
+    let totalTime = 0;
+
+    for (let i = 0; i < testCases.length; i++) {
+      const testCase = testCases[i];
+      
+      const result = await this.runTestCase(
+        langConfig.runCmd(filename),
+        tempDir,
+        testCase.input,
+        testCase.expectedOutput,
+        problem.timeLimit,
+        problem.memoryLimit
+      );
+
+      if (result.status === 'passed') {
+        passedTests++;
+        totalTime += result.time;
+      } else {
+        await this.updateSubmissionError(
+          submissionId,
+          result.status === 'time_limit' ? 'Time Limit Exceeded' :
+          result.status === 'runtime_error' ? result.error :
+          'Wrong Answer',
+          result.status,
+          passedTests,
+          testCases.length
+        );
+        await this.cleanup(tempDir);
+        return;
+      }
+    }
+
+    await Submission.findByIdAndUpdate(submissionId, {
+      status: 'accepted',
+      testCasesPassed: passedTests,
+      totalTestCases: testCases.length,
+      executionTime: totalTime,
+      memory: 0
+    });
+
+    await Problem.findByIdAndUpdate(problem._id, {
+      $inc: { acceptedCount: 1, submissionCount: 1 }
+    });
+
+    const submission = await Submission.findById(submissionId);
+    await User.findByIdAndUpdate(submission.userId, {
+      $inc: { solvedProblems: 1 }
+    });
+
+    await this.cleanup(tempDir);
   }
 
   async runTestCase(runCmd, cwd, input, expectedOutput, timeLimit, memoryLimit) {
@@ -173,7 +217,6 @@ class JudgeService {
           });
         }
 
-        // Compare output (trim whitespace)
         const actualOutput = stdout.trim();
         const expected = expectedOutput.trim();
 
@@ -181,7 +224,7 @@ class JudgeService {
           return resolve({ 
             status: 'passed', 
             time: executionTime,
-            memory: 0 // TODO: Get actual memory usage
+            memory: 0
           });
         } else {
           return resolve({ 
@@ -191,9 +234,8 @@ class JudgeService {
         }
       });
 
-      // Send input to stdin
       if (input) {
-        child.stdin.write(input);
+        child.stdin.write(input + '\n');
         child.stdin.end();
       }
     });
@@ -215,7 +257,6 @@ class JudgeService {
       totalTestCases: total
     });
 
-    // Increment submission count
     const submission = await Submission.findById(submissionId);
     await Problem.findByIdAndUpdate(submission.problemId, {
       $inc: { submissionCount: 1 }
